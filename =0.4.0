@@ -1,0 +1,2 @@
+Requirement already satisfied: google-generativeai in /home/ashish/anaconda3/lib/python3.11/site-packages (0.8.3)
+Requirement already satisfied: pydantic-settings in /home/ashish/anaconda3/lib/python3.11/site-packages (2.6.1)
