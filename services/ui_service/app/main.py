@@ -11,7 +11,7 @@ from core.config import settings
 from core.supabase_client import get_supabase_client
 from core.models import (
     GatewayFetchRequest, GatewayProcessRequest, GatewaySearchRequest,
-    GatewayAnalysisRequest, PaperMetadata, SearchResultItem, AnalysisResult, ProcessRequest
+    GatewayAnalysisRequest, PaperMetadata, SearchResultItem, SearchResponse ,AnalysisResult, ProcessRequest
 )
 from typing import Optional, List, Dict, Any
 from pydantic import ValidationError
@@ -235,37 +235,67 @@ async def process_paper_ui(paper_id_to_process: str, fetched_data: Dict[str, Dic
 # (search_ui and analyze_ui remain unchanged from previous correct version)
 async def search_ui(search_query: str, progress=gr.Progress(track_tqdm=True)):
     """Calls API to perform semantic search."""
-    # ... (Keep implementation from previous answer) ...
-    if not search_query: return "Please enter a search query.", ""
+    if not search_query: 
+        return "Please enter a search query."
+
     logger.info(f"UI requesting search for: {search_query}")
     progress(0, desc=f"Searching for '{search_query[:30]}...'")
+
     payload = GatewaySearchRequest(query=search_query).model_dump()
     api_result = await call_api_gateway("POST", "/search/", payload=payload)
+
     progress(0.8, desc="Processing search results...")
+
     if "error" in api_result:
         logger.error(f"Search failed: {api_result['error']}")
         progress(1, desc="Error.")
-        return f"**Error during search:**\n\n{api_result['error']}", ""
+        return f"**Error during search:**\n\n{api_result['error']}"
+
     else:
         search_response_data = api_result.get("data", {})
         try:
-             search_response = SearchResponse(**search_response_data); results = search_response.results
+            # Add more robust validation to handle different response formats
+            if isinstance(search_response_data, dict) and "results" in search_response_data:
+                search_response = SearchResponse(**search_response_data)
+                results = search_response.results
+            elif isinstance(search_response_data, list):
+                # If we get a direct list of results
+                results = [SearchResultItem(**item) for item in search_response_data]
+            else:
+                raise ValueError(f"Unexpected response format: {type(search_response_data)}")
         except Exception as val_err:
-             logger.error(f"Failed to validate search response data: {val_err}"); progress(1, desc="Validation Error.")
-             return "**Error:** Received invalid search result data from API.", ""
+            logger.error(f"Failed to validate search response data: {val_err}")
+            # Log the actual response for debugging
+            logger.error(f"Response data: {search_response_data}")
+            progress(1, desc="Validation Error.")
+            return "**Error:** Received invalid search result data from API."
+
         if not results:
-            logger.info("Search returned no results."); progress(1, desc="No results.")
-            return "**No relevant results found.**", ""
+            logger.info("Search returned no results.")
+            progress(1, desc="No results.")
+            return "**No relevant results found.**"
+
         formatted_results = ["**Search Results:**\n"]
+
         for i, item in enumerate(results):
-             chunk_id = getattr(item, 'chunk_id', 'N/A'); paper_id = getattr(item, 'paper_id', 'N/A')
-             score = getattr(item, 'score', 0.0); text = getattr(item, 'text', '')
-             formatted_results.append(f"---"); formatted_results.append(f"**Result {i+1}:** Chunk `{chunk_id}`")
-             formatted_results.append(f"   (Source Paper: `{paper_id}`, Similarity Score: {score:.3f})")
-             formatted_results.append(f"> {text.replace('>','>')}"); formatted_results.append("")
+            chunk_id = getattr(item, 'chunk_id', 'N/A')
+            paper_id = getattr(item, 'paper_id', 'N/A')
+            score = getattr(item, 'score', 0.0)
+            text = getattr(item, 'text', '')
+
+            formatted_results.append(f"---")
+            formatted_results.append(f"**Result {i+1}:** Chunk `{chunk_id}`")
+            formatted_results.append(f" (Source Paper: `{paper_id}`, Similarity Score: {score:.3f})")
+            formatted_results.append(f"> {text.replace('>','>')}")
+            formatted_results.append("")
+
         final_markdown = "\n".join(formatted_results)
-        logger.info(f"Search successful, returning {len(results)} results."); progress(1, desc="Done.")
-        return final_markdown, final_markdown
+
+        logger.info(f"Search successful, returning {len(results)} results.")
+        progress(1, desc="Done.")
+        
+        # Return only one value, not a tuple
+        return final_markdown
 
 async def analyze_ui(analysis_type: str, paper_ids_str: str, query: Optional[str], progress=gr.Progress(track_tqdm=True)):
     """Calls API to perform analysis."""
