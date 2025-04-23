@@ -1,0 +1,10 @@
+# services/ui_service/requirements.txt
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+gradio>=4.0.0 # Ensure a recent version of Gradio
+httpx>=0.25.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+supabase-py[async]>=2.0.0
+google-generativeai>=0.4.0 # Might not be strictly needed here, but good for consistency

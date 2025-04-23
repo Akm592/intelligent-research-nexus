@@ -1,0 +1,12 @@
+# services/paper_fetcher/requirements.txt
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+httpx>=0.25.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+supabase-py[async]>=2.0.0 # For Supabase metadata DB interaction
+arxiv>=2.0.0 # Add the arxiv library
+requests>=2.30.0 # Keep for other potential sources like Semantic Scholar
+
+# Add other libraries for specific academic sources later
