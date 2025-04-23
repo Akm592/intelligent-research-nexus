@@ -184,4 +184,3 @@ async def health_check():
         db_status = "error"
     gemini_status = "configured" if gemini_client.configured else "not_configured"
     return {"status": "ok", "dependencies": {"database": db_status, "gemini": gemini_status}}
-    return {"status": "ok", "message": "Vector Service is running"}

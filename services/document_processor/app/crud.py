@@ -1,49 +1,60 @@
-# services/document_processor/app/crud.py
-import asyncio
+import asyncio # <-- Import asyncio
 from core.config import logger as core_logger # Use the core logger
-from core.supabase_client import get_supabase_client, PAPERS_TABLE # Import client utility and table name
-from typing import List, Optional
+# Use client utility, table names, and ensure client init uses run_in_executor
+from core.supabase_client import get_supabase_client, PAPERS_TABLE, CHUNKS_TABLE
+from typing import List, Optional, Any
 from core.models import DocumentChunk # Import if saving chunks metadata here
 from supabase import PostgrestAPIError
+from postgrest import APIResponse  # Remove SingleAPIResponse import
+
 
 # Use a child logger specific to this module
 logger = core_logger.getChild("DocProcessor").getChild("CRUD")
 
-# Table name where processing status is stored
+# Table name where processing status is stored (using PAPERS_TABLE)
 STATUS_TABLE = PAPERS_TABLE
 STATUS_COLUMN = "processing_status" # Column name from your schema
 PAPER_ID_COLUMN = "id" # Primary key column name from your schema
-# --- Add this if you add the status_message column to your DB ---
-STATUS_MESSAGE_COLUMN = "status_message"
+# Column for optional status messages
+STATUS_MESSAGE_COLUMN = "status_message" # Ensure this column exists in your 'papers' table!
 
 async def update_paper_status(paper_id: str, status: str, message: Optional[str] = None) -> bool:
     """Updates the processing_status and optional status_message of a paper."""
     job_prefix = f"[{paper_id}]"
     logger.debug(f"{job_prefix} Attempting update: status='{status}', message='{message is not None}'.")
     try:
-        # Get the async client
-        supabase = await get_supabase_client() # Use default key
+        # Get the async-initialized client
+        supabase = await get_supabase_client() # This part is correct
+
         VALID_STATUSES = {"pending", "processing", "processed", "failed", "processed_with_errors"}
         if status not in VALID_STATUSES:
              logger.error(f"{job_prefix} Invalid status value '{status}' for update.")
              return False
 
         update_data = {STATUS_COLUMN: status}
-        # --- Add this block if you add the status_message column ---
-        # if message is not None: # Allow clearing the message with empty string? Or only set if provided?
-        #     # Ensure you have a 'status_message' TEXT column in your 'papers' table
-        #     update_data[STATUS_MESSAGE_COLUMN] = message
+        # --- Correctly add status_message ---
+        # Update message only if provided (pass None to clear it if DB allows NULL)
+        update_data[STATUS_MESSAGE_COLUMN] = message
 
-        # Use await with the async client methods
-        response = await supabase.table(STATUS_TABLE)\
-            .update(update_data)\
-            .eq(PAPER_ID_COLUMN, paper_id)\
-            .execute()
+        # Define the synchronous DB call
+        def db_call():
+            return supabase.table(STATUS_TABLE)\
+                .update(update_data)\
+                .eq(PAPER_ID_COLUMN, paper_id)\
+                .execute()
 
+        # --- Run the synchronous call in a thread ---
+        response = await asyncio.to_thread(db_call)
+
+        # The response object itself doesn't confirm success, lack of exception does.
+        # You might check response.data if needed, but for update, checking error is key.
         logger.info(f"{job_prefix} Sent update status request to '{status}'.")
+        # Consider adding more robust check based on response if needed
         return True
+
     except PostgrestAPIError as e:
-         logger.error(f"{job_prefix} Supabase API error updating status: {e.message}", exc_info=False)
+         # Log the specific Supabase error
+         logger.error(f"{job_prefix} Supabase API error updating status: {e.message} (Code: {e.code}, Details: {e.details})", exc_info=False)
          return False
     except Exception as e:
         logger.error(f"{job_prefix} Unexpected error updating status: {e}", exc_info=True)
@@ -54,26 +65,36 @@ async def get_paper_status(paper_id: str) -> Optional[str]:
     job_prefix = f"[{paper_id}]"
     logger.debug(f"{job_prefix} Attempting retrieve status from table '{STATUS_TABLE}'.")
     try:
-        # Get the async client
-        supabase = await get_supabase_client()
-        # Use await with the async client methods
-        response = await supabase.table(STATUS_TABLE)\
-            .select(f"{STATUS_COLUMN}")\
-            .eq(PAPER_ID_COLUMN, paper_id)\
-            .limit(1)\
-            .maybe_single()\
-            .execute()
+        # Get the async-initialized client
+        supabase = await get_supabase_client() # Correct
 
-        if response.data:
+        # Define the synchronous DB call
+        def db_call():
+            # Use maybe_single() to handle 0 or 1 result gracefully
+            return supabase.table(STATUS_TABLE)\
+                .select(f"{STATUS_COLUMN}")\
+                .eq(PAPER_ID_COLUMN, paper_id)\
+                .limit(1)\
+                .maybe_single()\
+                .execute()
+
+        # --- Run the synchronous call in a thread ---
+        response = await asyncio.to_thread(db_call)  # Remove type annotation
+
+        # maybe_single() returns data directly if found, or None
+        if response and hasattr(response, 'data') and response.data:
             status = response.data.get(STATUS_COLUMN)
             logger.info(f"{job_prefix} Retrieved status '{status}'.")
             return status
         else:
+            # This happens if the paper_id doesn't exist in the table
             logger.warning(f"{job_prefix} Paper ID not found in '{STATUS_TABLE}', cannot get status.")
             return None # Not found
+
     except PostgrestAPIError as e:
-         logger.error(f"{job_prefix} Supabase API error retrieving status: {e.message}", exc_info=False)
+         logger.error(f"{job_prefix} Supabase API error retrieving status: {e.message} (Code: {e.code}, Details: {e.details})", exc_info=False)
          return None # Error
     except Exception as e:
+        # Catch any other unexpected errors (network issues during thread execution etc.)
         logger.error(f"{job_prefix} Unexpected error retrieving status: {e}", exc_info=True)
         return None

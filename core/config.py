@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     PARSER_CHUNK_OVERLAP: int = int(os.getenv("PARSER_CHUNK_OVERLAP", 150)) # Overlap between chunks
     # Separators for recursive text splitting (order matters: tries first ones first)
     PARSER_SEPARATORS: List[str] = ["\n\n", "\n", ". ", ", ", " ", ""] # Common separators
+    
+    
+     # --- Vector Search Configuration --- ### <--- ADD THIS SECTION ###
+    # Default threshold for cosine similarity (1 - cosine_distance). Higher = more similar.
+    # Adjust based on embedding model and desired relevance. 0.7-0.8 is common.
+    SEARCH_MATCH_THRESHOLD: float = float(os.getenv("SEARCH_MATCH_THRESHOLD", 0.7))
 
     # Load settings from .env file if present
     # BaseSettings automatically reads environment variables.

@@ -17,22 +17,23 @@ def generate_chunk_id(paper_id: str, index: int) -> str:
 
 class PaperMetadata(BaseModel):
     """Represents the metadata associated with an academic paper or document."""
-    # Using default_factory for fields that should be auto-generated if not provided
     id: str = Field(..., description="Unique identifier for the paper (e.g., arXiv ID, DOI, generated ID for uploads)")
     title: Optional[str] = None
     authors: List[str] = Field(default_factory=list)
     abstract: Optional[str] = None
     publication_date: Optional[str] = None # Consider using datetime.date or str formatted consistently (YYYY-MM-DD)
     source: Optional[str] = Field(None, description="Origin of the paper (e.g., arXiv, Semantic Scholar, PubMed, Upload)")
-    url: Optional[str] = Field(None, description="Primary URL for the paper (e.g., arXiv page, DOI link)")
+    url: Optional[str] = Field(None, description="Primary URL for the paper (e.g., abstract page, DOI link)")
+    # --- ADDED FIELD for direct PDF download ---
+    pdf_url: Optional[str] = Field(None, description="Direct URL to the PDF file for downloading")
+    # ------------------------------------------
     keywords: List[str] = Field(default_factory=list)
     processing_status: str = Field(default="pending", description="Status: pending, processing, processed, processed_with_errors, failed")
-    # Database timestamps often added automatically, but can be included for clarity
+    status_message: Optional[str] = Field(None, description="Optional message providing details about the processing status") # Added based on previous fixes
     created_at: Optional[datetime.datetime] = None
     updated_at: Optional[datetime.datetime] = None
 
     class Config:
-        # Example configuration if needed, e.g., for ORM mode
         from_attributes = True # Renamed from orm_mode in Pydantic v2
 
 class DocumentChunk(BaseModel):
@@ -58,32 +59,27 @@ class FetchRequest(BaseModel):
 
 # Document Processor Service
 class ProcessRequest(BaseModel):
-    """Request to process a specific document."""
+    """Request to process a specific document. Sent from Gateway to Doc Processor."""
     paper_id: str
-    # Option 1: Document is already available via URL
+    # Option 1: Document URL provided explicitly by the caller (preferred if known)
     source_url: Optional[str] = None
-    # Option 2: Document is in Supabase Storage
+    # Option 2: Document is in Supabase Storage (from upload)
     bucket_name: Optional[str] = None
-    object_name: Optional[str] = None # Path within the bucket (e.g., uploads/paper_id/file.pdf)
+    object_name: Optional[str] = None # Path within the bucket
 
-    # Validator to ensure at least one source location is provided
-    @model_validator(mode='before')
-    @classmethod
-    def check_source_provided(cls, values):
-        if not values.get('source_url') and not values.get('object_name'):
-            # Check bucket_name only if object_name is provided
-             raise ValueError("Either 'source_url' or 'object_name' (with optional 'bucket_name') must be provided for processing.")
-        return values
+    # --- REMOVED VALIDATOR ---
+    # The Document Processor's get_document_content function MUST now handle
+    # the logic of finding the source if source_url or object_name are None
+    # by looking up the paper_id in the database.
+    pass
 
 # Vector Service
 class EmbedRequest(BaseModel):
     """Request to embed a list of document chunks."""
-    # Pass list of chunk dicts that can be validated into DocumentChunk
-    chunks: List[Dict[str, Any]]
+    chunks: List[Dict[str, Any]] # Expect list of dicts that can validate to DocumentChunk
 
 class EmbedResponse(BaseModel):
     """Response confirming which chunks were processed for embedding."""
-    # Return list of chunk dicts that were processed (or just IDs/status)
     processed_chunk_ids: List[str]
     failed_chunk_ids: List[str] = Field(default_factory=list)
 
@@ -91,16 +87,14 @@ class SearchQuery(BaseModel):
     """Request for semantic search."""
     query_text: str
     top_k: int = Field(default=5, gt=0, le=100)
-    # Filters applied during vector search (specific structure depends on backend implementation)
-    # Example: filter by paper_id {"paper_id": "arxiv:xxxx"}
-    filters: Optional[Dict[str, Any]] = None
+    filters: Optional[Dict[str, Any]] = None # Example: {"paper_id": "arxiv:xxxx"}
 
 class SearchResultItem(BaseModel):
     """Represents a single item returned from a search."""
     paper_id: str
     chunk_id: str
-    score: float = Field(description="Similarity score (higher is better, typically 0-1 for cosine similarity)")
-    text: str = Field(description="The text content of the matched chunk (often retrieved from metadata)")
+    score: float = Field(description="Similarity score")
+    text: str = Field(description="The text content of the matched chunk")
     metadata: Dict[str, Any] = Field(description="Metadata associated with the chunk")
 
 class SearchResponse(BaseModel):
@@ -125,12 +119,11 @@ class AnalysisRequest(BaseModel):
 class AnalysisResult(BaseModel):
     """Response containing the generated analysis."""
     result_text: str = Field(description="The main text body of the generated analysis")
-    # List of chunk_ids or potentially paper_ids cited in the analysis
     cited_sources: List[str] = Field(default_factory=list, description="List of source chunk IDs cited in the result text")
     analysis_type: str = Field(description="The type of analysis that was performed")
 
 
-# --- API Gateway Request/Response Models (Simplified mirroring for clarity) ---
+# --- API Gateway Request/Response Models (Representing Client Input) ---
 
 class GatewayFetchRequest(BaseModel):
     """Simplified fetch request for the Gateway."""
@@ -140,27 +133,15 @@ class GatewayFetchRequest(BaseModel):
 class GatewayProcessRequest(BaseModel):
     """Simplified process request for the Gateway, including storage info."""
     paper_id: str
-    # Allow specifying source via gateway
+    # Allow specifying source via gateway (UI might know PDF URL now)
     bucket_name: Optional[str] = None
     object_name: Optional[str] = None
-    source_url: Optional[str] = None
-
-    # Validator to ensure at least one source is hinted, although backend service does final check
-    @model_validator(mode='before')
-    @classmethod
-    def check_source_hint(cls, values):
-         if not values.get('source_url') and not values.get('object_name'):
-             # This isn't strictly necessary if the backend validates, but good practice
-             logger.warning("Gateway received process request without source_url or object_name hint.")
-             pass # Allow backend to handle missing source definitively
-         return values
-
+    source_url: Optional[str] = None # UI should provide PDF URL here if known
 
 class GatewaySearchRequest(BaseModel):
     """Simplified search request for the Gateway."""
     query: str
     top_k: int = Field(default=5, gt=0, le=100)
-    # Filters could be added here if needed by the UI/client directly
     # filters: Optional[Dict[str, Any]] = None
 
 class GatewayAnalysisRequest(BaseModel):
@@ -168,7 +149,7 @@ class GatewayAnalysisRequest(BaseModel):
     query: Optional[str] = None
     paper_ids: Optional[List[str]] = None
     analysis_type: str = "summary"
-    # detail_level could be added here if needed from client
+    # detail_level: Optional[str] = None
 
 class GatewayResponse(BaseModel):
     """Standard response wrapper for the API Gateway."""
