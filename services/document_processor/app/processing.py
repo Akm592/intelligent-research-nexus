@@ -4,7 +4,7 @@ from core.models import ProcessRequest, DocumentChunk, generate_chunk_id, PaperM
 from typing import Tuple, Optional, Dict, List, Any
 import logging
 import asyncio
-import io
+import io # For handling bytes as files
 import httpx
 from core.supabase_client import get_supabase_client, PAPERS_TABLE # Import PAPERS_TABLE
 from core.config import settings
@@ -12,6 +12,10 @@ from pdfminer.high_level import extract_text as pdf_extract_text
 from pdfminer.layout import LAParams
 from pdfminer.pdfparser import PDFSyntaxError
 from supabase import PostgrestAPIError # Import specific error
+
+# --- LangChain Import for Text Splitting ---
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+# ------------------------------------------
 
 logger = logging.getLogger("IRN_Core").getChild("DocProcessor").getChild("ProcessingLogic")
 
@@ -70,7 +74,7 @@ async def _download_from_url(url: str, paper_id: str) -> Optional[bytes]:
                 response.raise_for_status()
 
                 content_type = response.headers.get("Content-Type", "").lower()
-                # Be more strict - expect PDF or octet-stream for successful parsing
+                # Check if it looks like a PDF or binary stream
                 if 'pdf' not in content_type and 'octet-stream' not in content_type:
                     logger.warning(f"{job_prefix} URL {url} returned non-PDF Content-Type: {content_type}. Parsing will likely fail.")
                     # Consider returning None here if you *only* want to process PDFs from URLs
@@ -192,120 +196,10 @@ async def get_document_content(request: ProcessRequest) -> Tuple[Optional[bytes]
             logger.error(f"{job_prefix} No suitable URL (pdf_url or url) found in DB metadata after checking.")
             return None, None
 
-# --- Robust Recursive Text Splitter ---
-def _recursive_split(text: str, separators: List[str], chunk_size: int, chunk_overlap: int) -> List[str]:
-    """
-    Recursively splits text using a list of separators, designed to be more
-    robust against recursion depth errors.
-    """
-    final_chunks = []
-    if not text:
-        return final_chunks
 
-    # *** BASE CASE 1: No separators left ***
-    if not separators:
-        if len(text) > chunk_size:
-            # Perform hard cut if text still too long with no separators left
-            logger.warning(f"Text chunk longer than chunk size ({len(text)} > {chunk_size}) but no remaining separators. Performing hard cut.")
-            # Add the first part
-            final_chunks.append(text[:chunk_size])
-            # Recursively process the remainder WITH THE ORIGINAL SEPARATORS LIST
-            # This assumes the original list might contain separators the remainder has
-            # If this still causes issues, remove the recursive call here.
-            remainder = text[chunk_size:]
-            if remainder:
-                 # Use settings.PARSER_SEPARATORS assuming it's accessible or passed down
-                 # Safest might be to just return the hard cut first chunk.
-                 # Let's stick to the safer hard cut for now to guarantee termination.
-                 pass # Only take the first chunk in this extreme case
-        else:
-            # Text fits or is empty after trimming
-            if text.strip():
-                final_chunks.append(text.strip())
-        return final_chunks
-
-    # *** Find the first separator in the *current* list that exists in the text ***
-    separator = None
-    separator_index = -1 # Keep track of index for slicing list later
-    for i, s in enumerate(separators):
-        # Handle empty string only if explicitly in the list
-        if s == "":
-             # Check if "" was actually in the list passed to *this* recursive call
-             if "" in separators:
-                 separator = s
-                 separator_index = i
-                 break
-        elif s in text:
-            separator = s
-            separator_index = i
-            break # Use the first separator found
-
-    # *** If no separator from the *current* list is found ***
-    if separator is None:
-        # Try splitting with the *next* level of separators (finer granularity)
-        logger.debug(f"No separator from {separators} found in text chunk. Trying next level.")
-        # Pass separators[1:] to try the remaining ones
-        return _recursive_split(text, separators[1:], chunk_size, chunk_overlap)
-
-    # *** Split by the found separator ***
-    try:
-        if separator == "": # Handle splitting by empty string -> split into characters
-             splits = list(text)
-             part_separator = "" # Don't add back empty string
-        else:
-             splits = text.split(separator)
-             part_separator = separator # Separator to potentially add back
-    except Exception as split_err:
-         # Handle potential errors during split itself (e.g., regex issues if using re.split)
-         logger.error(f"Error splitting text with separator '{repr(separator)}': {split_err}. Treating as unsplittable at this level.")
-         # Fallback: Try next level of separators
-         return _recursive_split(text, separators[separator_index + 1:], chunk_size, chunk_overlap)
-
-
-    # --- Process the splits ---
-    current_chunk = ""
-    for i, part in enumerate(splits):
-        # Combine part and separator (unless it was empty string or last part)
-        part_to_add = part + (part_separator if part_separator and i < len(splits) - 1 else "")
-
-        # Check if adding the next part exceeds the chunk size
-        if len(current_chunk) + len(part_to_add) > chunk_size:
-            # Add the current chunk if it's valid (not just whitespace)
-            if current_chunk.strip():
-                 final_chunks.append(current_chunk.strip())
-
-            # Determine overlap text for the next chunk
-            overlap_text = current_chunk[-chunk_overlap:] if chunk_overlap > 0 else ""
-
-            # --- Check if the new part ITSELF is too large ---
-            if len(part_to_add) > chunk_size:
-                logger.warning(f"Split part is larger than chunk size ({len(part_to_add)} > {chunk_size}). Attempting to split further with finer separators.")
-                # --- *** KEY CHANGE: Recurse with NEXT level separators *** ---
-                # Slice the separator list to only include those *after* the current one
-                next_separators = separators[separator_index + 1:]
-                # Call recursively with the smaller list of separators
-                sub_chunks = _recursive_split(part_to_add, next_separators, chunk_size, chunk_overlap)
-                # Add the results of the sub-split
-                final_chunks.extend(sub_chunks)
-                # Reset current_chunk as the large part has been handled
-                current_chunk = ""
-            else:
-                # Start new chunk with overlap (if any) and the current part
-                current_chunk = overlap_text + part_to_add
-        else:
-            # Part fits, append to the current chunk
-            current_chunk += part_to_add
-
-    # Add the last remaining chunk if it's valid
-    if current_chunk.strip():
-        final_chunks.append(current_chunk.strip())
-
-    return final_chunks
-
-
-# --- Main PDF Parsing and Chunking Function ---
+# --- Main PDF Parsing and Chunking Function (using LangChain)---
 async def parse_and_chunk(paper_id: str, content: bytes, metadata: Dict[str, Any]) -> List[DocumentChunk]:
-    """Parses PDF content using pdfminer.six and chunks the text using the robust splitter."""
+    """Parses PDF content using pdfminer.six and chunks text using LangChain."""
     job_prefix = f"[{paper_id}]"
     logger.info(f"{job_prefix} Starting PDF parsing (source: {metadata.get('source_type', 'unknown')}, content length: {len(content)} bytes)...")
 
@@ -329,6 +223,7 @@ async def parse_and_chunk(paper_id: str, content: bytes, metadata: Dict[str, Any
 
     except PDFSyntaxError as e:
         source_type = metadata.get('source_type')
+        # Provide better error message if input was likely not PDF
         if source_type == 'db_fallback_url' or (source_type == 'explicit_url' and not metadata.get('url','').lower().endswith('.pdf')):
              logger.error(f"{job_prefix} Invalid PDF syntax. Input was likely HTML or non-PDF (source: {source_type}). Error: {e}", exc_info=False)
         else:
@@ -338,57 +233,46 @@ async def parse_and_chunk(paper_id: str, content: bytes, metadata: Dict[str, Any
         logger.error(f"{job_prefix} Unexpected error during PDF parsing using pdfminer.six: {e}", exc_info=True)
         return [] # Cannot proceed
 
-    # --- Text Chunking Stage ---
-    logger.info(f"{job_prefix} Starting text chunking. Size={settings.PARSER_CHUNK_SIZE}, Overlap={settings.PARSER_CHUNK_OVERLAP}")
+    # --- Text Chunking Stage using LangChain ---
+    logger.info(f"{job_prefix} Starting text chunking with LangChain. Size={settings.PARSER_CHUNK_SIZE}, Overlap={settings.PARSER_CHUNK_OVERLAP}")
 
-    # Use the full list of separators defined in config initially
-    initial_separators = settings.PARSER_SEPARATORS
+    try:
+        # Initialize LangChain's text splitter
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=settings.PARSER_CHUNK_SIZE,
+            chunk_overlap=settings.PARSER_CHUNK_OVERLAP,
+            length_function=len,
+            is_separator_regex=False, # Treat separators as simple strings
+            separators=settings.PARSER_SEPARATORS, # Use separators from config
+            # keep_separator=True # Optional: Set True if separators are meaningful boundaries you want preserved
+        )
 
-    if len(extracted_text) < settings.PARSER_CHUNK_SIZE:
-         logger.info(f"{job_prefix} Document text is smaller than chunk size, creating a single chunk.")
-         # Ensure the single chunk isn't just whitespace
-         single_chunk_text = extracted_text.strip()
-         text_chunks = [single_chunk_text] if single_chunk_text else []
-    else:
-        try:
-            # Run the updated recursive split in a thread pool
-            text_chunks = await asyncio.to_thread(
-                _recursive_split,
-                extracted_text,
-                initial_separators, # Pass the full initial list
-                settings.PARSER_CHUNK_SIZE,
-                settings.PARSER_CHUNK_OVERLAP
-            )
-        except RecursionError:
-            # Final safety net - should be prevented by _recursive_split's base cases
-             logger.error(f"{job_prefix} Catastrophic RecursionError during chunking despite safeguards. Returning empty chunk list.", exc_info=True)
-             return []
-        except Exception as e:
-            logger.error(f"{job_prefix} Unexpected error during text chunking stage: {e}", exc_info=True)
-            logger.warning(f"{job_prefix} Chunking failed, returning empty chunk list.")
-            return []
+        # Split the text (this is synchronous, run in thread)
+        text_chunks_str = await asyncio.to_thread(text_splitter.split_text, extracted_text)
 
-    if not text_chunks:
-         logger.warning(f"{job_prefix} Text chunking resulted in zero valid chunks.")
+    except Exception as e:
+        logger.error(f"{job_prefix} Error during LangChain text chunking: {e}", exc_info=True)
+        return [] # Return empty list on chunking error
+
+    if not text_chunks_str:
+         logger.warning(f"{job_prefix} LangChain text chunking resulted in zero chunks.")
          return []
 
     # --- Create DocumentChunk objects ---
     final_chunks: List[DocumentChunk] = []
-    for i, text_chunk in enumerate(text_chunks):
-        # Double check chunk isn't empty after potential stripping inside splitter
-        # This check might be redundant if _recursive_split ensures non-empty returns
-        current_text_chunk = text_chunk.strip()
+    for i, text_chunk_str in enumerate(text_chunks_str):
+        # Basic check for empty strings after splitting/stripping
+        current_text_chunk = text_chunk_str.strip()
         if not current_text_chunk:
-            continue
+            continue # Skip empty chunks
 
         chunk_id = generate_chunk_id(paper_id, i)
-        # Copy metadata obtained from get_document_content
+        # Copy metadata obtained from get_document_content (contains source info)
         chunk_meta = metadata.copy()
         # Add chunk-specific metadata
         chunk_meta.update({
             "chunk_index": i,
             "char_count": len(current_text_chunk), # Use length of stripped chunk
-            # TODO: Add page number mapping if pdfminer provides it (requires more complex parsing setup)
         })
 
         final_chunks.append(DocumentChunk(
@@ -396,8 +280,8 @@ async def parse_and_chunk(paper_id: str, content: bytes, metadata: Dict[str, Any
             paper_id=paper_id,
             text=current_text_chunk, # Use stripped chunk text
             metadata=chunk_meta
-            # embedding field is added later by vector service
+            # embedding field will be added later by vector service
         ))
 
-    logger.info(f"{job_prefix} Successfully created {len(final_chunks)} chunks.")
+    logger.info(f"{job_prefix} Successfully created {len(final_chunks)} chunks using LangChain splitter.")
     return final_chunks

@@ -7,3 +7,10 @@ pydantic-settings>=2.0.0
 python-dotenv>=1.0.0
 supabase-py[async]>=2.0.0   # For Supabase pgvector interaction (RPC, upsert)
 google-generativeai>=0.4.0 # For Gemini embedding generation
+
+
+langchain>=0.1.0,<0.2.0
+langchain-community # For SupabaseVectorStore
+langchain-google-genai # If embedding generation is moved here fully
+supabase # If not already present
+psycopg2-binary # Or appropriate DB driver if needed by LangChain Supabase
