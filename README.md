@@ -152,6 +152,37 @@ For local development, each microservice needs to be run in its own terminal win
 
 Once all services are running, you can test the API Gateway endpoints. (Refer to previous "how to run" guides or API documentation for specific `curl` examples for endpoints like `/health`, `/documents/fetch`, `/documents/process`, `/search/`, and `/analysis/`, all targeting the API Gateway at `http://localhost:8000`).
 
+### Testing
+
+This project uses [pytest](https://docs.pytest.org/) for unit and integration testing.
+
+**1. Install Test Dependencies:**
+
+Ensure you have installed all dependencies, including testing-specific ones:
+```bash
+pip install -r requirements.txt
+```
+(If you have a separate `requirements-dev.txt` or similar, adjust the command accordingly. Based on the provided `requirements.txt`, all dependencies are in one file.)
+
+**2. Running Tests:**
+
+To run all tests, navigate to the project root directory and execute:
+```bash
+python -m pytest
+```
+
+**3. Test Coverage:**
+
+To run tests and generate a coverage report:
+```bash
+python -m pytest --cov=. --cov-report=html
+```
+This will create an `htmlcov/` directory with a detailed HTML report. Open `htmlcov/index.html` in your browser to view it.
+You can also view a summary in the terminal with:
+```bash
+python -m pytest --cov=.
+```
+
 ## Next Steps
 
 *   Replace placeholder logic (`TODO` comments) with actual implementations (API calls, parsing libraries, storage clients).
