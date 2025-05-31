@@ -1,8 +1,11 @@
-# services/analysis_engine/requirements.txt
-fastapi>=0.100.0
-uvicorn[standard]>=0.23.0
-httpx>=0.25.0
-pydantic>=2.0.0
-pydantic-settings>=2.0.0
-python-dotenv>=1.0.0
-google-generativeai>=0.4.0 # For Gemini analysis generation
+fastapi
+uvicorn[standard]
+httpx
+pydantic
+pydantic-settings
+python-dotenv
+# LangChain core and specific integrations
+langchain>=0.1.0,<0.2.0 # Or pin to a specific recent version
+langchain-google-genai>=0.1.0 # For Gemini models
+langchain-core
+# Add others as needed
