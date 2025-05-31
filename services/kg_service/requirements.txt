@@ -1,10 +1,7 @@
 # services/kg_service/requirements.txt
 fastapi>=0.100.0
-uvicorn[standard]>=0.23.0
+uvicorn[standard]>=0.20.0
+neo4j>=5.10.0 # Check for the latest stable version
 pydantic>=2.0.0
-pydantic-settings>=2.0.0
 python-dotenv>=1.0.0
-
-# Add graph database client later:
-# Example:
-neo4j>=5.10.0
+httpx>=0.25.0
